@@ -16,6 +16,7 @@
 
 #include <sys/types.h>
 
+#include <chrono>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -62,5 +63,10 @@ struct FrameHash {
     }
     return hash;
   }
+};
+
+struct FrameTS {
+  frames_t frames;
+  std::chrono::time_point<std::chrono::system_clock> ts;
 };
 }  // namespace pyflame

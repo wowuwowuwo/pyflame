@@ -14,7 +14,6 @@
 
 #include <getopt.h>
 
-#include <chrono>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -43,10 +42,51 @@ const char usage_str[] =
      "(default 0.001)\n"
      "  -v, --version        Show the version\n"
      "  -x, --exclude-idle   Exclude idle time from statistics\n");
+     "  -t, --timestamp      Include timestamps for each stacktrace\n");
 }  // namespace
+
+/* Prints the stack traces */
+int print_frames (size_t idle,
+                  std::unordered_map<frames_t, size_t, FrameHash> &buckets) {
+  if (idle) {
+    std::cout << "(idle) " << idle << "\n";
+  }
+  // process the frames
+  for (const auto &kv : buckets) {
+    if (kv.first.empty()) {
+      std::cerr << "uh oh\n";
+      return 1;
+    }
+    auto last = kv.first.rend();
+    last--;
+    for (auto it = kv.first.rbegin(); it != last; ++it) {
+      std::cout << *it << ";";
+    }
+    std::cout << *last << " " << kv.second << "\n";
+  }
+}
+
+/* Prints the stack traces with timestamps */
+int print_frames_ts(std::vector<FrameTS> &frame_ts) {
+  for (const auto &it : frame_ts) {
+    /* Print timestamp */
+    std::cout << it.ts  << "\n";
+    /* Handle idle */
+    if (it.frames.empty()) {
+      std::cout << "(idle) " << "\n";
+      continue;
+    }
+    /* Print the call stack */
+    for (auto f_it = it.frames.rbegin(); f_it != it.frames.rend(); ++f_it) {
+      std::cout << *f_it << ";";
+    }
+    cout << "\n";
+  }
+}
 
 int main(int argc, char **argv) {
   bool include_idle = true;
+  bool include_ts = false;
   double seconds = 1;
   double sample_rate = 0.001;
   for (;;) {
@@ -56,7 +96,8 @@ int main(int argc, char **argv) {
         {"seconds", required_argument, 0, 's'},
         {"version", no_argument, 0, 'v'},
         {"exclude-idle", no_argument, 0, 'x'},
-        {0, 0, 0, 0}};
+        {"timestamp", no_argument, 0, 't'},
+				{0, 0, 0, 0}};
     int option_index = 0;
     int c = getopt_long(argc, argv, "hr:s:vx", long_options, &option_index);
     if (c == -1) {
@@ -87,7 +128,10 @@ int main(int argc, char **argv) {
       case 'x':
         include_idle = false;
         break;
-      case '?':
+      case 't':
+        include_ts = true;
+        break;
+     case '?':
         // getopt_long should already have printed an error message
         break;
       default:
@@ -112,6 +156,7 @@ int main(int argc, char **argv) {
       const std::chrono::microseconds interval{
           static_cast<long>(sample_rate * 1000000)};
       std::unordered_map<frames_t, size_t, FrameHash> buckets;
+      std::vector<FrameTS> frame_ts;
       size_t idle = 0;
       auto end =
           std::chrono::system_clock::now() +
@@ -124,14 +169,26 @@ int main(int argc, char **argv) {
           }
         } else {
           frames_t frames = GetStack(pid, frame_addr);
-          auto it = buckets.find(frames);
-          if (it == buckets.end()) {
-            buckets.insert(it, {frames, 1});
-          } else {
-            it->second++;
+          if (!include_ts){
+            auto it = buckets.find(frames);
+            if (it == buckets.end()) {
+              buckets.insert(it, {frames, 1});
+            } else {
+              it->second++;
+            }
           }
         }
         auto now = std::chrono::system_clock::now();
+        /* Check if time stamp needs to be included with stack traces */
+        if (include_ts)
+        {
+          /* Handle idle */
+          if (0 == frame_addr) {
+            frame_ts.push_back({{}, now});
+          } else {
+            frame_ts.push_back({frames, now});
+          }
+        }
         if (now + interval >= end) {
           break;
         }
@@ -139,24 +196,17 @@ int main(int argc, char **argv) {
         std::this_thread::sleep_for(interval);
         PtraceAttach(pid);
       }
-      if (idle) {
-        std::cout << "(idle) " << idle << "\n";
-      }
-      // process the frames
-      for (const auto &kv : buckets) {
-        if (kv.first.empty()) {
-          std::cerr << "uh oh\n";
-          return 1;
-        }
-        auto last = kv.first.rend();
-        last--;
-        for (auto it = kv.first.rbegin(); it != last; ++it) {
-          std::cout << *it << ";";
-        }
-        std::cout << *last << " " << kv.second << "\n";
+      /* Print frames based on timestamp is required or not */
+      if (include_ts) {
+        print_frames_ts(frame_ts);
+      } else {
+        print_frames(idle, buckets);
       }
     } else {
       const unsigned long frame_addr = FirstFrameAddr(pid, tstate_addr);
+      if (include_ts) {
+        std::cout << std::chrono::system_clock::now() "\n";
+      }
       if (frame_addr) {
         std::vector<Frame> stack = GetStack(pid, frame_addr);
         for (auto it = stack.rbegin(); it != stack.rend(); it++) {
